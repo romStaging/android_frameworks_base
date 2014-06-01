@@ -31,6 +31,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.pm.PackageManager;
+import android.content.pm.ThemeUtils;
 import android.content.res.Configuration;
 import android.database.ContentObserver;
 import android.hardware.Sensor;
@@ -71,6 +72,7 @@ final class UiModeManagerService extends IUiModeManager.Stub
     private final Context mContext;
     private final TwilightService mTwilightService;
     private final Handler mHandler = new Handler();
+    private Context mUiContext;
 
     final Object mLock = new Object();
 
@@ -186,6 +188,13 @@ final class UiModeManagerService extends IUiModeManager.Stub
         }
     }
 
+    private final BroadcastReceiver mThemeChangeReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            mUiContext = null;
+        }
+    };
+
     private final TwilightService.TwilightListener mTwilightListener =
             new TwilightService.TwilightListener() {
         @Override
@@ -229,6 +238,8 @@ final class UiModeManagerService extends IUiModeManager.Stub
         mSensorManager = (SensorManager)(context.getSystemService(Context.SENSOR_SERVICE));
 
         mSensorManager = (SensorManager)(context.getSystemService(Context.SENSOR_SERVICE));
+
+        ThemeUtils.registerThemeChangeReceiver(mContext, mThemeChangeReceiver);
 
         mPowerManager = (PowerManager)context.getSystemService(Context.POWER_SERVICE);
         mWakeLock = mPowerManager.newWakeLock(PowerManager.FULL_WAKE_LOCK, TAG);
@@ -694,7 +705,7 @@ final class UiModeManagerService extends IUiModeManager.Stub
                 n.flags = Notification.FLAG_ONGOING_EVENT;
                 n.when = 0;
                 n.setLatestEventInfo(
-                        mContext,
+                        getUiContext(),
                         mContext.getString(R.string.car_mode_disable_notification_title),
                         mContext.getString(R.string.car_mode_disable_notification_message),
                         PendingIntent.getActivityAsUser(mContext, 0, carModeOffIntent, 0,
@@ -735,6 +746,13 @@ final class UiModeManagerService extends IUiModeManager.Stub
         if (state != null) {
             mComputedNightMode = state.isNight();
         }
+    }
+
+    private Context getUiContext() {
+        if (mUiContext == null) {
+            mUiContext = ThemeUtils.createUiContext(mContext);
+        }
+        return mUiContext != null ? mUiContext : mContext;
     }
 
     @Override

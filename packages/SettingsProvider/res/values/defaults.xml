@@ -185,5 +185,9 @@
 
     <!-- Volume adjust sound -->
     <integer name="def_volume_adjust_sounds_enabled">1</integer>
+
+    <!-- Default theme -->
+    <string name="def_theme_package"></string>
+    <string name="def_theme_components"></string>
 </resources>
 
