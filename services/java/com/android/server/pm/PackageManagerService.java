@@ -232,8 +232,8 @@ public class PackageManagerService extends IPackageManager.Stub {
     static final int SCAN_UPDATE_TIME = 1<<6;
     static final int SCAN_DEFER_DEX = 1<<7;
     static final int SCAN_BOOTING = 1<<8;
-    static final int SCAN_DELETE_DATA_ON_FAILURES = 1<<9;
     static final int SCAN_TRUSTED_OVERLAY = 1<<9;
+    static final int SCAN_DELETE_DATA_ON_FAILURES = 1<<9;
 
     static final int REMOVE_CHATTY = 1<<16;
 
@@ -5424,10 +5424,10 @@ public class PackageManagerService extends IPackageManager.Stub {
             HashMap<String, PackageParser.Package> map = mOverlays.get(target);
             if (map != null) {
                 map.remove(opkg.packageName);
-            }
 
-            if (map.isEmpty()) {
-                mOverlays.remove(target);
+                if (map.isEmpty()) {
+                    mOverlays.remove(target);
+                }
             }
 
             PackageParser.Package targetPkg = mPackages.get(target);
