@@ -37,12 +37,16 @@ import android.os.Looper;
 import android.os.Message;
 import android.os.PowerManager;
 import android.os.SystemClock;
+import android.os.UserHandle;
+import android.provider.Settings;
 import android.text.format.DateUtils;
 import android.util.FloatMath;
+import android.util.Log;
 import android.util.Slog;
 import android.util.Spline;
 import android.util.TimeUtils;
-
+import android.view.DisplayInfo;
+import android.view.SurfaceControl;
 import java.io.PrintWriter;
 
 /**
@@ -360,7 +364,7 @@ final class DisplayPowerController {
     // Twilight changed.  We might recalculate auto-brightness values.
     private boolean mTwilightChanged;
     private boolean mAutoBrightnessSettingsChanged;
-
+    private Context mContext;
     /**
      * Creates the display power controller.
      */
@@ -375,7 +379,7 @@ final class DisplayPowerController {
         mDisplayBlanker = displayBlanker;
         mCallbacks = callbacks;
         mCallbackHandler = callbackHandler;
-
+        mContext = context;
         mLights = lights;
         mTwilight = twilight;
         mSensorManager = sensorManager;
