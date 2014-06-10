@@ -300,7 +300,6 @@ public class PhoneStatusBar extends BaseStatusBar implements DemoMode {
     int mLinger;
     int mInitialTouchX;
     int mInitialTouchY;
-    private boolean mRecreating = false;
 
     // last theme that was applied in order to detect theme change (as opposed
     // to some other configuration change).

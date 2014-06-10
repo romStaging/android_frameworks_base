@@ -93,8 +93,8 @@ public class NavigationBarView extends LinearLayout implements NavigationCallbac
 
     boolean mWasNotifsButtonVisible = false;
     private Drawable mBackIcon, mBackLandIcon, mBackAltIcon, mBackAltLandIcon,
-            mRecentIcon, mRecentLandIcon, mRecentAltIcon, mRecentAltLandIconm,
-	    HomeIcon, mHomeLandIcon;;
+            mRecentIcon, mRecentLandIcon, mRecentAltIcon, mRecentAltLandIcon,
+	    mHomeIcon, mHomeLandIcon;;
 
     private DelegateViewHelper mDelegateHelper;
     private DeadZone mDeadZone;
@@ -401,6 +401,7 @@ public class NavigationBarView extends LinearLayout implements NavigationCallbac
 
     public void setNavigationIconHints(int hints, boolean force) {
         setNavigationIconHints(NavigationCallback.NAVBAR_BACK_HINT, hints, force);
+	setNavigationIconHints(NavigationCallback.NAVBAR_HOME_HINT, hints, force);
     }
 
     @Override

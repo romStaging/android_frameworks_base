@@ -1066,11 +1066,13 @@ public class KeyguardViewMediator {
                             mLockPatternUtils.getCurrentUser());
                     KeyguardHostView.shakeSecureNow();
                     adjustStatusBarLocked();
+		}
             } else if (DISMISS_KEYGUARD_SECURELY_ACTION.equals(intent.getAction())) {
                 synchronized (KeyguardViewMediator.this) {
                     dismiss();
                 }
             }
+		
         }
     };
 
