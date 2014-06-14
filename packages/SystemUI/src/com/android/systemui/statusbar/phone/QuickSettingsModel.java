@@ -1,5 +1,6 @@
 /*
  * Copyright (C) 2012 The Android Open Source Project
+ * This code has been modified. Portions copyright (C) 2014 ParanoidAndroid Project.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,6 +19,7 @@ package com.android.systemui.statusbar.phone;
 
 import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothAdapter.BluetoothStateChangeCallback;
+import android.bluetooth.BluetoothDevice;
 import android.content.BroadcastReceiver;
 import android.content.ContentResolver;
 import android.content.Context;
@@ -27,24 +29,37 @@ import android.content.pm.PackageManager;
 import android.content.res.Resources;
 import android.database.ContentObserver;
 import android.graphics.drawable.Drawable;
+import android.hardware.usb.UsbManager;
+import android.media.AudioManager;
 import android.media.MediaRouter;
 import android.media.MediaRouter.RouteInfo;
 import android.net.ConnectivityManager;
+import android.net.Uri;
+import android.net.wifi.WifiManager;
 import android.os.Handler;
+import android.os.SystemProperties;
 import android.os.UserHandle;
+import android.os.Vibrator;
 import android.provider.Settings;
 import android.provider.Settings.SettingNotFoundException;
 import android.text.TextUtils;
+import android.telephony.TelephonyManager;
+import android.util.Log;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.inputmethod.InputMethodInfo;
 import android.view.inputmethod.InputMethodManager;
 import android.view.inputmethod.InputMethodSubtype;
 
+import com.android.internal.telephony.Phone;
+import com.android.internal.telephony.PhoneConstants;
+import com.android.internal.util.paranoid.DeviceUtils;
+import com.android.internal.util.paranoid.LightbulbConstants;
 import com.android.systemui.R;
 import com.android.systemui.settings.BrightnessController.BrightnessStateChangeCallback;
 import com.android.systemui.settings.CurrentUserTracker;
 import com.android.systemui.statusbar.policy.BatteryController.BatteryStateChangeCallback;
+import com.android.systemui.statusbar.policy.LocationController;
 import com.android.systemui.statusbar.policy.LocationController.LocationSettingsChangeCallback;
 import com.android.systemui.statusbar.policy.NetworkController.NetworkSignalChangedCallback;
 import com.android.systemui.statusbar.policy.RotationLockController;
@@ -52,7 +67,7 @@ import com.android.systemui.statusbar.policy.RotationLockController.RotationLock
 
 import java.util.List;
 
-class QuickSettingsModel implements BluetoothStateChangeCallback,
+public class QuickSettingsModel implements BluetoothStateChangeCallback,
         NetworkSignalChangedCallback,
         BatteryStateChangeCallback,
         BrightnessStateChangeCallback,
@@ -104,6 +119,7 @@ class QuickSettingsModel implements BluetoothStateChangeCallback,
         public void refreshView(QuickSettingsTileView view, State state);
     }
 
+    // General basic tiles
     public static class BasicRefreshCallback implements RefreshCallback {
         private final QuickSettingsBasicTile mView;
         private boolean mShowWhenEnabled;
@@ -138,6 +154,87 @@ class QuickSettingsModel implements BluetoothStateChangeCallback,
                 onAlarmChanged(intent);
                 onNextAlarmChanged();
             }
+        }
+    };
+
+    /** Broadcast receive to determine if device boot is complete*/
+    private BroadcastReceiver mBootReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            final ContentResolver cr = mContext.getContentResolver();
+            String action = intent.getAction();
+            if (action.equals(Intent.ACTION_BOOT_COMPLETED)) {
+                mHandler.postDelayed(new Runnable() {
+                    @Override public void run() {
+                        mUsesAospDialer = Settings.System
+                                .getInt(cr, Settings.System.AOSP_DIALER, 0) == 1;
+                        if (deviceHasMobileData()) {
+                            if (mUsesAospDialer) {
+                                refreshMobileNetworkTile();
+                            } else {
+                                mMobileNetworkState.label =
+                                    mContext.getResources()
+                                            .getString(R.string.quick_settings_network_disabled);
+                                mMobileNetworkState.iconId =
+                                    R.drawable.ic_qs_unexpected_network;
+                                mMobileNetworkCallback.refreshView(mMobileNetworkTile,
+                                                                    mMobileNetworkState);
+                            }
+                        }
+                    }
+                }, 200);
+            }
+            context.unregisterReceiver(mBootReceiver);
+        }
+    };
+
+    /** Broadcast receive to catch device shutdown */
+    private BroadcastReceiver mShutdownReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            final ContentResolver cr = mContext.getContentResolver();
+            String action = intent.getAction();
+            if (action.equals(Intent.ACTION_SHUTDOWN)) {
+                Settings.System.putInt(cr, Settings.System.AOSP_DIALER, 0);
+            }
+        }
+    };
+
+    /** Broadcast receive to determine lightbulb state. */
+    private BroadcastReceiver mLightbulbReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            mLightbulbActive = intent.getIntExtra(LightbulbConstants.EXTRA_CURRENT_STATE, 0) != 0;
+            onLightbulbChanged();
+        }
+    };
+
+    /** Broadcast receive to determine ringer mode. */
+    private BroadcastReceiver mRingerReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            int ringerMode = intent.getIntExtra(AudioManager.EXTRA_RINGER_MODE, 0);
+            onRingerModeChanged(ringerMode);
+        }
+    };
+
+    /** Broadcast receive to determine usb tether. */
+    private BroadcastReceiver mUsbIntentReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            if (intent.getAction().equals(UsbManager.ACTION_USB_STATE)) {
+                mUsbConnected = intent.getBooleanExtra(UsbManager.USB_CONNECTED, false);
+            }
+
+            if (intent.getAction().equals(Intent.ACTION_MEDIA_SHARED)) {
+                mMassStorageActive = true;
+            }
+
+            if (intent.getAction().equals(Intent.ACTION_MEDIA_UNSHARED)) {
+                mMassStorageActive = false;
+            }
+
+            onUsbChanged();
         }
     };
 
@@ -199,6 +296,86 @@ class QuickSettingsModel implements BluetoothStateChangeCallback,
         }
     }
 
+    /** ContentObserver to watch Network State */
+    private class NetworkObserver extends ContentObserver {
+        public NetworkObserver(Handler handler) {
+            super(handler);
+        }
+
+        @Override public void onChange(boolean selfChange) {
+            onMobileNetworkChanged();
+        }
+
+        public void startObserving() {
+            final ContentResolver cr = mContext.getContentResolver();
+            cr.registerContentObserver(Settings.Global.getUriFor(
+                    Settings.Global.PREFERRED_NETWORK_MODE), false, this);
+        }
+    }
+
+    /** ContentObserver to determine the Sleep Time */
+    private class SleepTimeObserver extends ContentObserver {
+        public SleepTimeObserver(Handler handler) {
+            super(handler);
+        }
+
+        @Override
+        public void onChange(boolean selfChange) {
+            refreshSleepTimeTile();
+        }
+
+        public void startObserving() {
+            final ContentResolver cr = mContext.getContentResolver();
+            cr.registerContentObserver(Settings.System.getUriFor(
+                    Settings.System.SCREEN_OFF_TIMEOUT), false, this);
+        }
+    }
+
+    /** ContentObserver to watch immersive **/
+    private class ImmersiveObserver extends ContentObserver {
+        public ImmersiveObserver(Handler handler) {
+            super(handler);
+        }
+
+        @Override
+        public void onChange(boolean selfChange, Uri uri) {
+            if (uri.equals(Settings.System.getUriFor(Settings.System.PIE_STATE))) {
+                int pieState = Settings.System.getInt(mContext.getContentResolver(),
+                        Settings.System.PIE_STATE, 0);
+                if (getImmersiveMode() == 0 && pieState > 0) switchImmersiveGlobal();
+            }
+            onImmersiveGlobalChanged();
+            onImmersiveModeChanged();
+        }
+
+        public void startObserving() {
+            final ContentResolver cr = mContext.getContentResolver();
+            cr.unregisterContentObserver(this);
+            cr.registerContentObserver(Settings.System.getUriFor(
+                    Settings.System.IMMERSIVE_MODE), false, this);
+            cr.registerContentObserver(Settings.System.getUriFor(
+                    Settings.System.PIE_STATE), false, this);
+        }
+    }
+
+    /** ContentObserver to determine the Ringer mode */
+    private class RingerObserver extends ContentObserver {
+        public RingerObserver(Handler handler) {
+            super(handler);
+        }
+
+        @Override
+        public void onChange(boolean selfChange) {
+            onRingerModeChanged();
+        }
+
+        public void startObserving() {
+            final ContentResolver cr = mContext.getContentResolver();
+            cr.registerContentObserver(Settings.System.getUriFor(
+                    Settings.System.VIBRATE_WHEN_RINGING), false, this);
+        }
+    }
+
     /** Callback for changes to remote display routes. */
     private class RemoteDisplayRouteCallback extends MediaRouter.SimpleCallback {
         @Override
@@ -223,17 +400,42 @@ class QuickSettingsModel implements BluetoothStateChangeCallback,
         }
     }
 
+    /** Broadcast receive to determine wifi ap state. */
+    private BroadcastReceiver mWifiApStateReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            String action = intent.getAction();
+            if (WifiManager.WIFI_AP_STATE_CHANGED_ACTION.equals(action)) {
+                onWifiApChanged();
+            }
+        }
+    };
+
     private final Context mContext;
     private final Handler mHandler;
     private final CurrentUserTracker mUserTracker;
     private final NextAlarmObserver mNextAlarmObserver;
     private final BugreportObserver mBugreportObserver;
     private final BrightnessObserver mBrightnessObserver;
+    private final NetworkObserver mMobileNetworkObserver;
+    private final SleepTimeObserver mSleepTimeObserver;
+    private final ImmersiveObserver mImmersiveObserver;
+    private final RingerObserver mRingerObserver;
+    private boolean mUsbTethered = false;
+    private boolean mUsbConnected = false;
+    private boolean mMassStorageActive = false;
+    protected boolean mUsesAospDialer = false;
+    private String[] mUsbRegexs;
+    private ConnectivityManager mCM;
+
+    private final AudioManager mAudioManager;
+    private final Vibrator mVibrator;
 
     private final MediaRouter mMediaRouter;
     private final RemoteDisplayRouteCallback mRemoteDisplayRouteCallback;
 
     private final boolean mHasMobileData;
+    protected boolean mLightbulbActive;
 
     private QuickSettingsTileView mUserTile;
     private RefreshCallback mUserCallback;
@@ -251,9 +453,17 @@ class QuickSettingsModel implements BluetoothStateChangeCallback,
     private RefreshCallback mAirplaneModeCallback;
     private State mAirplaneModeState = new State();
 
+    private QuickSettingsTileView mUsbModeTile;
+    private RefreshCallback mUsbModeCallback;
+    private State mUsbModeState = new State();
+
     private QuickSettingsTileView mWifiTile;
     private RefreshCallback mWifiCallback;
     private WifiState mWifiState = new WifiState();
+
+    private QuickSettingsTileView mWifiApTile;
+    private RefreshCallback mWifiApCallback;
+    private State mWifiApState = new State();
 
     private QuickSettingsTileView mRemoteDisplayTile;
     private RefreshCallback mRemoteDisplayCallback;
@@ -267,6 +477,10 @@ class QuickSettingsModel implements BluetoothStateChangeCallback,
     private RefreshCallback mBluetoothCallback;
     private BluetoothState mBluetoothState = new BluetoothState();
 
+    private QuickSettingsTileView mBluetoothExtraTile;
+    private RefreshCallback mBluetoothExtraCallback;
+    private BluetoothState mBluetoothExtraState = new BluetoothState();
+
     private QuickSettingsTileView mBatteryTile;
     private RefreshCallback mBatteryCallback;
     private BatteryState mBatteryState = new BatteryState();
@@ -274,6 +488,10 @@ class QuickSettingsModel implements BluetoothStateChangeCallback,
     private QuickSettingsTileView mLocationTile;
     private RefreshCallback mLocationCallback;
     private State mLocationState = new State();
+
+    private QuickSettingsTileView mLocationExtraTile;
+    private RefreshCallback mLocationExtraCallback;
+    private State mLocationExtraState = new State();
 
     private QuickSettingsTileView mImeTile;
     private RefreshCallback mImeCallback = null;
@@ -299,7 +517,32 @@ class QuickSettingsModel implements BluetoothStateChangeCallback,
     private RefreshCallback mSslCaCertWarningCallback;
     private State mSslCaCertWarningState = new State();
 
+    private QuickSettingsTileView mMobileNetworkTile;
+    private RefreshCallback mMobileNetworkCallback;
+    private State mMobileNetworkState = new State();
+
+    private QuickSettingsTileView mLightbulbTile;
+    private RefreshCallback mLightbulbCallback;
+    private State mLightbulbState = new State();
+
+    private QuickSettingsTileView mSleepTimeTile;
+    private RefreshCallback mSleepTimeCallback;
+    private State mSleepTimeState = new State();
+
+    private QuickSettingsTileView mImmersiveGlobalTile;
+    private RefreshCallback mImmersiveGlobalCallback;
+    private State mImmersiveGlobalState = new State();
+
+    private QuickSettingsTileView mImmersiveModeTile;
+    private RefreshCallback mImmersiveModeCallback;
+    private State mImmersiveModeState = new State();
+
+    private QuickSettingsTileView mRingerModeTile;
+    private RefreshCallback mRingerModeCallback;
+    private State mRingerModeState = new State();
+
     private RotationLockController mRotationLockController;
+    private LocationController mLocationController;
 
     public QuickSettingsModel(Context context) {
         mContext = context;
@@ -308,33 +551,80 @@ class QuickSettingsModel implements BluetoothStateChangeCallback,
             @Override
             public void onUserSwitched(int newUserId) {
                 mBrightnessObserver.startObserving();
+                mSleepTimeObserver.startObserving();
+                mImmersiveObserver.startObserving();
+                mRingerObserver.startObserving();
                 refreshRotationLockTile();
                 onBrightnessLevelChanged();
                 onNextAlarmChanged();
                 onBugreportChanged();
                 rebindMediaRouterAsCurrentUser();
+                onUsbChanged();
+                onRingerModeChanged();
             }
         };
-
         mNextAlarmObserver = new NextAlarmObserver(mHandler);
         mNextAlarmObserver.startObserving();
         mBugreportObserver = new BugreportObserver(mHandler);
         mBugreportObserver.startObserving();
         mBrightnessObserver = new BrightnessObserver(mHandler);
         mBrightnessObserver.startObserving();
+        mMobileNetworkObserver = new NetworkObserver(mHandler);
+        mMobileNetworkObserver.startObserving();
+        mSleepTimeObserver = new SleepTimeObserver(mHandler);
+        mSleepTimeObserver.startObserving();
+        mImmersiveObserver = new ImmersiveObserver(mHandler);
+        mImmersiveObserver.startObserving();
+        mRingerObserver = new RingerObserver(mHandler);
+        mRingerObserver.startObserving();
+
+        mAudioManager = (AudioManager) context.getSystemService(Context.AUDIO_SERVICE);
+        mVibrator = (Vibrator) context.getSystemService(Context.VIBRATOR_SERVICE);
 
         mMediaRouter = (MediaRouter)context.getSystemService(Context.MEDIA_ROUTER_SERVICE);
         rebindMediaRouterAsCurrentUser();
 
         mRemoteDisplayRouteCallback = new RemoteDisplayRouteCallback();
 
-        ConnectivityManager cm = (ConnectivityManager)
-                context.getSystemService(Context.CONNECTIVITY_SERVICE);
-        mHasMobileData = cm.isNetworkSupported(ConnectivityManager.TYPE_MOBILE);
+        mCM = (ConnectivityManager) context.getSystemService(Context.CONNECTIVITY_SERVICE);
+        mHasMobileData = mCM.isNetworkSupported(ConnectivityManager.TYPE_MOBILE);
 
         IntentFilter alarmIntentFilter = new IntentFilter();
         alarmIntentFilter.addAction(Intent.ACTION_ALARM_CHANGED);
         context.registerReceiver(mAlarmIntentReceiver, alarmIntentFilter);
+
+        IntentFilter bootFilter = new IntentFilter();
+        bootFilter.addAction(Intent.ACTION_BOOT_COMPLETED);
+        context.registerReceiver(mBootReceiver, bootFilter);
+
+        IntentFilter shutdownFilter = new IntentFilter();
+        shutdownFilter.addAction(Intent.ACTION_SHUTDOWN);
+        context.registerReceiver(mShutdownReceiver, shutdownFilter);
+
+        IntentFilter lightbulbFilter = new IntentFilter();
+        lightbulbFilter.addAction(LightbulbConstants.ACTION_STATE_CHANGED);
+        context.registerReceiver(mLightbulbReceiver, lightbulbFilter);
+
+        IntentFilter wifiApStateFilter = new IntentFilter();
+        wifiApStateFilter.addAction(WifiManager.WIFI_AP_STATE_CHANGED_ACTION);
+        context.registerReceiver(mWifiApStateReceiver, wifiApStateFilter);
+
+        IntentFilter ringerFilter = new IntentFilter();
+        ringerFilter.addAction(AudioManager.RINGER_MODE_CHANGED_ACTION);
+        context.registerReceiver(mRingerReceiver, ringerFilter);
+
+        // Only register for devices that support usb tethering
+        if (DeviceUtils.deviceSupportsUsbTether(context)) {
+            IntentFilter usbIntentFilter = new IntentFilter();
+            usbIntentFilter.addAction(ConnectivityManager.ACTION_TETHER_STATE_CHANGED);
+            usbIntentFilter.addAction(UsbManager.ACTION_USB_STATE);
+            usbIntentFilter.addAction(Intent.ACTION_MEDIA_SHARED);
+            usbIntentFilter.addAction(Intent.ACTION_MEDIA_UNSHARED);
+            context.registerReceiver(mUsbIntentReceiver, usbIntentFilter);
+        }
+
+        mUsesAospDialer = Settings.System.getInt(context.getContentResolver(),
+                Settings.System.AOSP_DIALER, 0) == 1;
     }
 
     void updateResources() {
@@ -345,6 +635,13 @@ class QuickSettingsModel implements BluetoothStateChangeCallback,
         refreshRotationLockTile();
         refreshRssiTile();
         refreshLocationTile();
+        refreshMobileNetworkTile();
+        refreshSleepTimeTile();
+        refreshLocationExtraTile();
+        refreshImmersiveGlobalTile();
+        refreshImmersiveModeTile();
+        refreshWifiApTile();
+        refreshRingerModeTile();
     }
 
     // Settings
@@ -401,6 +698,40 @@ class QuickSettingsModel implements BluetoothStateChangeCallback,
         mAlarmCallback.refreshView(mAlarmTile, mAlarmState);
     }
 
+    // Usb Mode
+    void addUsbModeTile(QuickSettingsTileView view, RefreshCallback cb) {
+        mUsbModeTile = view;
+        mUsbModeTile.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                if (mUsbConnected) {
+                    setUsbTethering(!mUsbTethered);
+                }
+            }
+        });
+        mUsbModeCallback = cb;
+        onUsbChanged();
+    }
+
+    void onUsbChanged() {
+        updateState();
+        if (mUsbConnected && !mMassStorageActive) {
+            if (mUsbTethered) {
+                mUsbModeState.iconId = R.drawable.ic_qs_usb_tether_on;
+                mUsbModeState.label =
+                        mContext.getString(R.string.quick_settings_usb_tether_on_label);
+            } else {
+                mUsbModeState.iconId = R.drawable.ic_qs_usb_tether_connected;
+                mUsbModeState.label =
+                        mContext.getString(R.string.quick_settings_usb_tether_connected_label);
+            }
+            mUsbModeState.enabled = true;
+        } else {
+            mUsbModeState.enabled = false;
+        }
+        mUsbModeCallback.refreshView(mUsbModeTile, mUsbModeState);
+    }
+
     // Airplane Mode
     void addAirplaneModeTile(QuickSettingsTileView view, RefreshCallback cb) {
         mAirplaneModeTile = view;
@@ -423,8 +754,9 @@ class QuickSettingsModel implements BluetoothStateChangeCallback,
         // TODO: Sets the view to be "awaiting" if not already awaiting
 
         // Change the system setting
-        Settings.Global.putInt(mContext.getContentResolver(), Settings.Global.AIRPLANE_MODE_ON,
-                                enabled ? 1 : 0);
+        Settings.Global.putInt(mContext.getContentResolver(),
+                Settings.Global.AIRPLANE_MODE_ON,
+                enabled ? 1 : 0);
 
         // Post the intent
         Intent intent = new Intent(Intent.ACTION_AIRPLANE_MODE_CHANGED);
@@ -502,11 +834,20 @@ class QuickSettingsModel implements BluetoothStateChangeCallback,
         return mHasMobileData;
     }
 
+    boolean deviceSupportsLTE() {
+        return DeviceUtils.deviceSupportsLte(mContext);
+    }
+
+    boolean deviceHasCameraFlash() {
+        return mContext.getResources().getBoolean(
+                com.android.internal.R.bool.config_device_has_camera_flash);
+    }
+
     // RSSI
     void addRSSITile(QuickSettingsTileView view, RefreshCallback cb) {
         mRSSITile = view;
         mRSSICallback = cb;
-        mRSSICallback.refreshView(mRSSITile, mRSSIState);
+        refreshRssiTile();
     }
     // NetworkSignalChanged callback
     @Override
@@ -523,12 +864,12 @@ class QuickSettingsModel implements BluetoothStateChangeCallback,
             mRSSIState.signalContentDescription = enabled && (mobileSignalIconId > 0)
                     ? signalContentDescription
                     : r.getString(R.string.accessibility_no_signal);
-            mRSSIState.dataTypeIconId = enabled && (dataTypeIconId > 0) && !mWifiState.enabled
+            mRSSIState.dataTypeIconId = enabled && (dataTypeIconId > 0) && !mWifiState.connected
                     ? dataTypeIconId
                     : 0;
             mRSSIState.activityIn = enabled && activityIn;
             mRSSIState.activityOut = enabled && activityOut;
-            mRSSIState.dataContentDescription = enabled && (dataTypeIconId > 0) && !mWifiState.enabled
+            mRSSIState.dataContentDescription = enabled && (dataTypeIconId > 0) && !mWifiState.connected
                     ? dataContentDescription
                     : r.getString(R.string.accessibility_no_data);
             mRSSIState.label = enabled
@@ -540,10 +881,135 @@ class QuickSettingsModel implements BluetoothStateChangeCallback,
 
     void refreshRssiTile() {
         if (mRSSITile != null) {
-            // We reinflate the original view due to potential styling changes that may have
-            // taken place due to a configuration change.
-            mRSSITile.reinflateContent(LayoutInflater.from(mContext));
+            mRSSICallback.refreshView(mRSSITile, mRSSIState);
         }
+    }
+
+    // Mobile Network
+    void addMobileNetworkTile(QuickSettingsTileView view, RefreshCallback cb) {
+        mMobileNetworkTile = view;
+        mMobileNetworkCallback = cb;
+        onMobileNetworkChanged();
+    }
+
+    void onMobileNetworkChanged() {
+        if (deviceHasMobileData() && mUsesAospDialer) {
+            mMobileNetworkState.label = getNetworkType(mContext.getResources());
+            mMobileNetworkState.iconId = getNetworkTypeIcon();
+            mMobileNetworkCallback.refreshView(mMobileNetworkTile, mMobileNetworkState);
+        }
+    }
+
+    void refreshMobileNetworkTile() {
+        onMobileNetworkChanged();
+    }
+
+    protected void toggleMobileNetworkState() {
+        TelephonyManager tm = (TelephonyManager)
+            mContext.getSystemService(Context.TELEPHONY_SERVICE);
+        boolean usesQcLte = SystemProperties.getBoolean(
+                        "ro.config.qc_lte_network_modes", false);
+        int network = getCurrentPreferredNetworkMode(mContext);
+        switch(network) {
+            case Phone.NT_MODE_GLOBAL:
+            case Phone.NT_MODE_LTE_WCDMA:
+            case Phone.NT_MODE_LTE_GSM_WCDMA:
+            case Phone.NT_MODE_LTE_ONLY:
+                // 2G Only
+                tm.toggleMobileNetwork(Phone.NT_MODE_GSM_ONLY);
+                break;
+            case Phone.NT_MODE_LTE_CDMA_AND_EVDO:
+            case Phone.NT_MODE_LTE_CMDA_EVDO_GSM_WCDMA:
+                // 2G Only
+                tm.toggleMobileNetwork(Phone.NT_MODE_CDMA_NO_EVDO);
+                break;
+            case Phone.NT_MODE_GSM_ONLY:
+                // 3G Only
+                tm.toggleMobileNetwork(Phone.NT_MODE_WCDMA_ONLY);
+                break;
+            case Phone.NT_MODE_WCDMA_ONLY:
+                // 2G/3G
+                tm.toggleMobileNetwork(Phone.NT_MODE_WCDMA_PREF);
+                break;
+            case Phone.NT_MODE_EVDO_NO_CDMA:
+            case Phone.NT_MODE_CDMA_NO_EVDO:
+                // 2G/3G
+                tm.toggleMobileNetwork(Phone.NT_MODE_CDMA);
+                break;
+            case Phone.NT_MODE_WCDMA_PREF:
+            case Phone.NT_MODE_GSM_UMTS:
+                // LTE
+                if (deviceSupportsLTE()) {
+                    if (usesQcLte) {
+                        tm.toggleMobileNetwork(Phone.NT_MODE_LTE_CDMA_AND_EVDO);
+                    } else {
+                        tm.toggleMobileNetwork(Phone.NT_MODE_LTE_GSM_WCDMA);
+                    }
+                } else {
+                    tm.toggleMobileNetwork(Phone.NT_MODE_GSM_ONLY);
+                }
+                break;
+            case Phone.NT_MODE_CDMA:
+                tm.toggleMobileNetwork(Phone.NT_MODE_LTE_CDMA_AND_EVDO);
+                break;
+        }
+    }
+
+    private String getNetworkType(Resources r) {
+        int network = getCurrentPreferredNetworkMode(mContext);
+        switch (network) {
+            case Phone.NT_MODE_GLOBAL:
+            case Phone.NT_MODE_LTE_CDMA_AND_EVDO:
+            case Phone.NT_MODE_LTE_GSM_WCDMA:
+            case Phone.NT_MODE_LTE_CMDA_EVDO_GSM_WCDMA:
+            case Phone.NT_MODE_LTE_ONLY:
+            case Phone.NT_MODE_LTE_WCDMA:
+            case Phone.NT_MODE_GSM_UMTS:
+            case Phone.NT_MODE_WCDMA_ONLY:
+            case Phone.NT_MODE_GSM_ONLY:
+            case Phone.NT_MODE_WCDMA_PREF:
+            case Phone.NT_MODE_EVDO_NO_CDMA:
+            case Phone.NT_MODE_CDMA_NO_EVDO:
+            case Phone.NT_MODE_CDMA:
+                return r.getString(R.string.quick_settings_network_type);
+        }
+        return r.getString(R.string.quick_settings_network_unknown);
+    }
+
+    private int getNetworkTypeIcon() {
+        int network = getCurrentPreferredNetworkMode(mContext);
+        switch (network) {
+            case Phone.NT_MODE_GLOBAL:
+            case Phone.NT_MODE_LTE_CDMA_AND_EVDO:
+            case Phone.NT_MODE_LTE_GSM_WCDMA:
+            case Phone.NT_MODE_LTE_CMDA_EVDO_GSM_WCDMA:
+            case Phone.NT_MODE_LTE_ONLY:
+            case Phone.NT_MODE_LTE_WCDMA:
+                return R.drawable.ic_qs_lte_on;
+            case Phone.NT_MODE_WCDMA_ONLY:
+                return R.drawable.ic_qs_3g_on;
+            case Phone.NT_MODE_GSM_ONLY:
+            case Phone.NT_MODE_CDMA_NO_EVDO:
+            case Phone.NT_MODE_EVDO_NO_CDMA:
+                return R.drawable.ic_qs_2g_on;
+            case Phone.NT_MODE_WCDMA_PREF:
+            case Phone.NT_MODE_GSM_UMTS:
+            case Phone.NT_MODE_CDMA:
+                return R.drawable.ic_qs_2g3g_on;
+        }
+        return R.drawable.ic_qs_unexpected_network;
+    }
+
+    public static int getCurrentPreferredNetworkMode(Context context) {
+        int network = Settings.Global.getInt(context.getContentResolver(),
+                    Settings.Global.PREFERRED_NETWORK_MODE, -1);
+        return network;
+    }
+
+    public boolean isMobileDataEnabled(Context context) {
+        ConnectivityManager cm =
+                (ConnectivityManager)context.getSystemService(Context.CONNECTIVITY_SERVICE);
+        return cm.getMobileDataEnabled();
     }
 
     // Bluetooth
@@ -556,6 +1022,16 @@ class QuickSettingsModel implements BluetoothStateChangeCallback,
         mBluetoothState.connected =
                 (adapter.getConnectionState() == BluetoothAdapter.STATE_CONNECTED);
         onBluetoothStateChange(mBluetoothState);
+    }
+    void addBluetoothExtraTile(QuickSettingsTileView view, RefreshCallback cb) {
+        mBluetoothExtraTile = view;
+        mBluetoothExtraCallback = cb;
+
+        final BluetoothAdapter adapter = BluetoothAdapter.getDefaultAdapter();
+        mBluetoothExtraState.enabled = adapter.isEnabled();
+        mBluetoothExtraState.connected =
+                (adapter.getConnectionState() == BluetoothAdapter.STATE_CONNECTED);
+        onBluetoothStateChange(mBluetoothExtraState);
     }
     boolean deviceSupportsBluetooth() {
         return (BluetoothAdapter.getDefaultAdapter() != null);
@@ -585,7 +1061,24 @@ class QuickSettingsModel implements BluetoothStateChangeCallback,
             mBluetoothState.label = r.getString(R.string.quick_settings_bluetooth_off_label);
             mBluetoothState.stateContentDescription = r.getString(R.string.accessibility_desc_off);
         }
+
+        if (mBluetoothExtraTile != null) {
+            final BluetoothAdapter mBluetoothAdapter = BluetoothAdapter.getDefaultAdapter();
+            if (mBluetoothAdapter.getScanMode()
+                    == BluetoothAdapter.SCAN_MODE_CONNECTABLE_DISCOVERABLE) {
+                mBluetoothExtraState.iconId = R.drawable.ic_qs_bluetooth_discoverable;
+                mBluetoothExtraState.label = r.getString(R.string.quick_settings_bluetooth_label);
+            } else {
+                mBluetoothExtraState.iconId = R.drawable.ic_qs_bluetooth_discoverable_off;
+                mBluetoothExtraState.label = r.getString(R.string.quick_settings_bluetooth_off_label);
+            }
+        }
+
         mBluetoothCallback.refreshView(mBluetoothTile, mBluetoothState);
+
+        if (mBluetoothExtraTile != null) {
+            mBluetoothExtraCallback.refreshView(mBluetoothExtraTile, mBluetoothExtraState);
+        }
     }
     void refreshBluetoothTile() {
         if (mBluetoothTile != null) {
@@ -607,6 +1100,9 @@ class QuickSettingsModel implements BluetoothStateChangeCallback,
         mBatteryCallback.refreshView(mBatteryTile, mBatteryState);
     }
     void refreshBatteryTile() {
+        if (mBatteryCallback == null) {
+            return;
+        }
         mBatteryCallback.refreshView(mBatteryTile, mBatteryState);
     }
 
@@ -634,6 +1130,41 @@ class QuickSettingsModel implements BluetoothStateChangeCallback,
         mLocationState.label = label;
         mLocationState.iconId = locationIconId;
         mLocationCallback.refreshView(mLocationTile, mLocationState);
+        refreshLocationExtraTile();
+    }
+
+    void addLocationExtraTile(QuickSettingsTileView view, LocationController controller, RefreshCallback cb) {
+        mLocationExtraTile = view;
+        mLocationController = controller;
+        mLocationExtraCallback = cb;
+        mLocationExtraCallback.refreshView(mLocationExtraTile, mLocationExtraState);
+    }
+
+    void refreshLocationExtraTile() {
+        if (mLocationExtraTile != null) {
+            onLocationExtraSettingsChanged(mLocationController.locationMode(), mLocationState.enabled);
+        }
+    }
+
+    private void onLocationExtraSettingsChanged(int mode, boolean locationEnabled) {
+        int locationIconId = locationEnabled
+                ? R.drawable.ic_qs_location_accuracy_on : R.drawable.ic_qs_location_accuracy_off;
+        mLocationExtraState.enabled = locationEnabled;
+        mLocationExtraState.label = getLocationMode(mContext.getResources(), mode);
+        mLocationExtraState.iconId = locationIconId;
+        mLocationExtraCallback.refreshView(mLocationExtraTile, mLocationExtraState);
+    }
+
+    private String getLocationMode(Resources r, int location) {
+        switch (location) {
+            case Settings.Secure.LOCATION_MODE_SENSORS_ONLY:
+                return r.getString(R.string.quick_settings_location_mode_sensors_label);
+            case Settings.Secure.LOCATION_MODE_BATTERY_SAVING:
+                return r.getString(R.string.quick_settings_location_mode_battery_label);
+            case Settings.Secure.LOCATION_MODE_HIGH_ACCURACY:
+                return r.getString(R.string.quick_settings_location_mode_high_label);
+        }
+        return r.getString(R.string.quick_settings_location_off_label);
     }
 
     // Bug report
@@ -864,5 +1395,435 @@ class QuickSettingsModel implements BluetoothStateChangeCallback,
         }
         mSslCaCertWarningState.label = r.getString(R.string.ssl_ca_cert_warning);
         mSslCaCertWarningCallback.refreshView(mSslCaCertWarningTile, mSslCaCertWarningState);
+    }
+
+    // Lightbulb
+    void addLightbulbTile(QuickSettingsTileView view, RefreshCallback cb) {
+        mLightbulbTile = view;
+        mLightbulbCallback = cb;
+        onLightbulbChanged();
+    }
+
+    void onLightbulbChanged() {
+        if (mLightbulbActive) {
+            mLightbulbState.iconId = R.drawable.ic_qs_lightbulb_on;
+            mLightbulbState.label = mContext.getString(R.string.quick_settings_lightbulb_label);
+        } else {
+            mLightbulbState.iconId = R.drawable.ic_qs_lightbulb_off;
+            mLightbulbState.label = mContext.getString(R.string.quick_settings_lightbulb_off_label);
+        }
+        mLightbulbState.enabled = mLightbulbActive;
+        mLightbulbCallback.refreshView(mLightbulbTile, mLightbulbState);
+    }
+
+    private void updateState() {
+        mUsbRegexs = mCM.getTetherableUsbRegexs();
+
+        String[] available = mCM.getTetherableIfaces();
+        String[] tethered = mCM.getTetheredIfaces();
+        String[] errored = mCM.getTetheringErroredIfaces();
+        updateState(available, tethered, errored);
+    }
+
+    private void updateState(String[] available, String[] tethered,
+            String[] errored) {
+        updateUsbState(available, tethered, errored);
+    }
+
+    private void updateUsbState(String[] available, String[] tethered,
+            String[] errored) {
+
+        mUsbTethered = false;
+        for (String s : tethered) {
+            for (String regex : mUsbRegexs) {
+                if (s.matches(regex)) mUsbTethered = true;
+            }
+        }
+
+    }
+
+    private void setUsbTethering(boolean enabled) {
+        if (mCM.setUsbTethering(enabled) != ConnectivityManager.TETHER_ERROR_NO_ERROR) {
+            return;
+        }
+    }
+
+    // Sleep: Screen timeout sub-tile (sleep time tile)
+    private static final int SCREEN_TIMEOUT_15     =   15000;
+    private static final int SCREEN_TIMEOUT_30     =   30000;
+    private static final int SCREEN_TIMEOUT_60     =   60000;
+    private static final int SCREEN_TIMEOUT_120    =  120000;
+    private static final int SCREEN_TIMEOUT_300    =  300000;
+    private static final int SCREEN_TIMEOUT_600    =  600000;
+    private static final int SCREEN_TIMEOUT_1800   = 1800000;
+
+    void addSleepTimeTile(QuickSettingsTileView view, RefreshCallback cb) {
+        mSleepTimeTile = view;
+        mSleepTimeTile.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                screenTimeoutChangeState();
+                refreshSleepTimeTile();
+            }
+        });
+        mSleepTimeCallback = cb;
+        refreshSleepTimeTile();
+    }
+
+    private void refreshSleepTimeTile() {
+        mSleepTimeState.enabled = true;
+        mSleepTimeState.iconId = R.drawable.ic_qs_sleep_time;
+        mSleepTimeState.label = screenTimeoutGetLabel(getScreenTimeout());
+        mSleepTimeCallback.refreshView(mSleepTimeTile, mSleepTimeState);
+    }
+
+    protected int getScreenTimeout() {
+        return Settings.System.getInt(mContext.getContentResolver(),
+                Settings.System.SCREEN_OFF_TIMEOUT, SCREEN_TIMEOUT_30);
+    }
+
+    protected void screenTimeoutChangeState() {
+        final int currentScreenTimeout = getScreenTimeout();
+        int screenTimeout = currentScreenTimeout;
+
+        switch(currentScreenTimeout) {
+            case SCREEN_TIMEOUT_15:
+                screenTimeout = SCREEN_TIMEOUT_30;
+                break;
+            case SCREEN_TIMEOUT_30:
+                screenTimeout = SCREEN_TIMEOUT_60;
+                break;
+            case SCREEN_TIMEOUT_60:
+                screenTimeout = SCREEN_TIMEOUT_120;
+                break;
+            case SCREEN_TIMEOUT_120:
+                screenTimeout = SCREEN_TIMEOUT_300;
+                break;
+            case SCREEN_TIMEOUT_300:
+                screenTimeout = SCREEN_TIMEOUT_600;
+                break;
+            case SCREEN_TIMEOUT_600:
+                screenTimeout = SCREEN_TIMEOUT_1800;
+                break;
+            case SCREEN_TIMEOUT_1800:
+                screenTimeout = SCREEN_TIMEOUT_15;
+                break;
+        }
+
+        Settings.System.putInt(
+                mContext.getContentResolver(),
+                Settings.System.SCREEN_OFF_TIMEOUT, screenTimeout);
+        }
+
+    protected String screenTimeoutGetLabel(int currentTimeout) {
+        switch(currentTimeout) {
+            case SCREEN_TIMEOUT_15:
+                return mContext.getString(R.string.quick_settings_sleep_time_15_label);
+            case SCREEN_TIMEOUT_30:
+                return mContext.getString(R.string.quick_settings_sleep_time_30_label);
+            case SCREEN_TIMEOUT_60:
+                return mContext.getString(R.string.quick_settings_sleep_time_60_label);
+            case SCREEN_TIMEOUT_120:
+                return mContext.getString(R.string.quick_settings_sleep_time_120_label);
+            case SCREEN_TIMEOUT_300:
+                return mContext.getString(R.string.quick_settings_sleep_time_300_label);
+            case SCREEN_TIMEOUT_600:
+                return mContext.getString(R.string.quick_settings_sleep_time_600_label);
+            case SCREEN_TIMEOUT_1800:
+                return mContext.getString(R.string.quick_settings_sleep_time_1800_label);
+        }
+        return mContext.getString(R.string.quick_settings_sleep_time_unknown_label);
+    }
+
+    // Immersive mode
+    public static final int IMMERSIVE_MODE_OFF = 0;
+    public static final int IMMERSIVE_MODE_FULL = 1;
+    public static final int IMMERSIVE_MODE_HIDE_ONLY_NAVBAR = 2;
+    public static final int IMMERSIVE_MODE_HIDE_ONLY_STATUSBAR = 3;
+
+    void addImmersiveGlobalTile(QuickSettingsTileView view, RefreshCallback cb) {
+        mImmersiveGlobalTile = view;
+        mImmersiveGlobalCallback = cb;
+        onImmersiveGlobalChanged();
+    }
+
+    void addImmersiveModeTile(QuickSettingsTileView view, RefreshCallback cb) {
+        mImmersiveModeTile = view;
+        mImmersiveModeCallback = cb;
+        onImmersiveModeChanged();
+    }
+
+    private void onImmersiveGlobalChanged() {
+        Resources r = mContext.getResources();
+        final int mode = getImmersiveMode();
+        final boolean enabled = isPieEnabled();
+        if (mode == IMMERSIVE_MODE_OFF) {
+            mImmersiveGlobalState.iconId = enabled ?
+                    R.drawable.ic_qs_pie_global_off : R.drawable.ic_qs_immersive_global_off;
+            mImmersiveGlobalState.label = r.getString(R.string.quick_settings_immersive_global_off_label);
+        } else {
+            mImmersiveGlobalState.iconId = enabled ?
+                    R.drawable.ic_qs_pie_global_on : R.drawable.ic_qs_immersive_global_on;
+            mImmersiveGlobalState.label = r.getString(R.string.quick_settings_immersive_global_on_label);
+        }
+        mImmersiveGlobalCallback.refreshView(mImmersiveGlobalTile, mImmersiveGlobalState);
+    }
+
+    private void onImmersiveModeChanged() {
+        Resources r = mContext.getResources();
+        final int mode = getImmersiveMode();
+        switch(mode) {
+            case IMMERSIVE_MODE_OFF:
+                mImmersiveModeState.iconId =
+                        R.drawable.ic_qs_immersive_off;
+                mImmersiveModeState.label =
+                        r.getString(R.string.quick_settings_immersive_mode_off_label);
+                break;
+            case IMMERSIVE_MODE_FULL:
+                mImmersiveModeState.iconId =
+                        R.drawable.ic_qs_immersive_full;
+                mImmersiveModeState.label =
+                        r.getString(R.string.quick_settings_immersive_mode_full_label);
+                break;
+            case IMMERSIVE_MODE_HIDE_ONLY_NAVBAR:
+                mImmersiveModeState.iconId =
+                        R.drawable.ic_qs_immersive_navigation_bar_off;
+                mImmersiveModeState.label =
+                        r.getString(R.string.quick_settings_immersive_mode_no_status_bar_label);
+                break;
+            case IMMERSIVE_MODE_HIDE_ONLY_STATUSBAR:
+                mImmersiveModeState.iconId =
+                        R.drawable.ic_qs_immersive_status_bar_off;
+                mImmersiveModeState.label =
+                        r.getString(R.string.quick_settings_immersive_mode_no_navigation_bar_label);
+                break;
+        }
+        mImmersiveModeCallback.refreshView(mImmersiveModeTile, mImmersiveModeState);
+    }
+
+    void refreshImmersiveGlobalTile() {
+        onImmersiveGlobalChanged();
+    }
+
+    void refreshImmersiveModeTile() {
+        onImmersiveModeChanged();
+    }
+
+    protected int getImmersiveMode() {
+        return Settings.System.getInt(mContext.getContentResolver(),
+                Settings.System.IMMERSIVE_MODE, 0);
+    }
+
+    protected boolean isPieEnabled() {
+        return Settings.System.getInt(mContext.getContentResolver(),
+                Settings.System.PIE_STATE, 0) == 1;
+    }
+
+    private void setImmersiveMode(int style) {
+        Settings.System.putInt(mContext.getContentResolver(),
+                Settings.System.IMMERSIVE_MODE, style);
+        if (style != 0) {
+            setImmersiveLastActiveState(style);
+        }
+    }
+
+    private int getImmersiveLastActiveState() {
+        return Settings.System.getInt(mContext.getContentResolver(),
+                Settings.System.IMMERSIVE_LAST_ACTIVE_STATE, 1);
+    }
+
+    private void setImmersiveLastActiveState(int style) {
+        Settings.System.putInt(mContext.getContentResolver(),
+                Settings.System.IMMERSIVE_LAST_ACTIVE_STATE, style);
+    }
+
+    protected void switchImmersiveGlobal() {
+        final int current = getImmersiveMode();
+        final int lastState = getImmersiveLastActiveState();
+        switch(current) {
+            case IMMERSIVE_MODE_OFF:
+                setImmersiveMode(lastState);
+                break;
+            case IMMERSIVE_MODE_FULL:
+            case IMMERSIVE_MODE_HIDE_ONLY_NAVBAR:
+            case IMMERSIVE_MODE_HIDE_ONLY_STATUSBAR:
+                setImmersiveMode(IMMERSIVE_MODE_OFF);
+                break;
+        }
+    }
+
+    protected void switchImmersiveMode() {
+        final int current = getImmersiveMode();
+        switch(current) {
+            case IMMERSIVE_MODE_FULL:
+                setImmersiveMode(IMMERSIVE_MODE_HIDE_ONLY_NAVBAR);
+                break;
+            case IMMERSIVE_MODE_HIDE_ONLY_NAVBAR:
+                setImmersiveMode(IMMERSIVE_MODE_HIDE_ONLY_STATUSBAR);
+                break;
+            case IMMERSIVE_MODE_HIDE_ONLY_STATUSBAR:
+                setImmersiveMode(IMMERSIVE_MODE_FULL);
+                break;
+        }
+    }
+
+    // Wifi Ap
+    void addWifiApTile(QuickSettingsTileView view, RefreshCallback cb) {
+        mWifiApTile = view;
+        mWifiApCallback = cb;
+        onWifiApChanged();
+    }
+
+    void onWifiApChanged() {
+        if (isWifiApEnabled()) {
+            mWifiApState.iconId = R.drawable.ic_qs_wifi_ap_on;
+            mWifiApState.label = mContext.getString(R.string.quick_settings_wifi_ap_label);
+        } else {
+            mWifiApState.iconId = R.drawable.ic_qs_wifi_ap_off;
+            mWifiApState.label = mContext.getString(R.string.quick_settings_wifi_ap_off_label);
+        }
+        mWifiApState.enabled = isWifiApEnabled();
+        mWifiApCallback.refreshView(mWifiApTile, mWifiApState);
+    }
+
+    void refreshWifiApTile() {
+        onWifiApChanged();
+    }
+
+    protected void toggleWifiApState() {
+        setWifiApEnabled(isWifiApEnabled() ? false : true);
+    }
+
+    protected boolean isWifiApEnabled() {
+        WifiManager mWifiManager = (WifiManager) mContext.getSystemService(Context.WIFI_SERVICE);
+        int state = mWifiManager.getWifiApState();
+        boolean active;
+        switch (state) {
+            case WifiManager.WIFI_AP_STATE_ENABLING:
+            case WifiManager.WIFI_AP_STATE_ENABLED:
+                active = true;
+                break;
+            case WifiManager.WIFI_AP_STATE_DISABLING:
+            case WifiManager.WIFI_AP_STATE_DISABLED:
+            default:
+                active = false;
+                break;
+        }
+        return active;
+    }
+
+    protected void setWifiApEnabled(boolean enable) {
+        WifiManager mWifiManager = (WifiManager) mContext.getSystemService(Context.WIFI_SERVICE);
+        final ContentResolver cr = mContext.getContentResolver();
+        /**
+         * Disable Wifi if enabling tethering
+         */
+        int wifiState = mWifiManager.getWifiState();
+        if (enable && ((wifiState == WifiManager.WIFI_STATE_ENABLING) ||
+                (wifiState == WifiManager.WIFI_STATE_ENABLED))) {
+            mWifiManager.setWifiEnabled(false);
+            Settings.Global.putInt(cr, Settings.Global.WIFI_SAVED_STATE, 1);
+        }
+
+        // Turn on the Wifi AP
+        mWifiManager.setWifiApEnabled(null, enable);
+
+        /**
+         *  If needed, restore Wifi on tether disable
+         */
+        if (!enable) {
+            int wifiSavedState = 0;
+            try {
+                wifiSavedState = Settings.Global.getInt(cr, Settings.Global.WIFI_SAVED_STATE);
+            } catch (Settings.SettingNotFoundException e) {
+                // Do nothing here
+            }
+            if (wifiSavedState == 1) {
+                mWifiManager.setWifiEnabled(true);
+                Settings.Global.putInt(cr, Settings.Global.WIFI_SAVED_STATE, 0);
+            }
+        }
+    }
+
+    // Ringer mode
+    private static final int RINGER_MODE_SILENT = 0;
+    private static final int RINGER_MODE_VIBRATE = 1;
+    private static final int RINGER_MODE_NORMAL = 2;
+
+    void addRingerModeTile(QuickSettingsTileView view, RefreshCallback cb) {
+        mRingerModeTile = view;
+        mRingerModeCallback = cb;
+        onRingerModeChanged();
+    }
+
+    void onRingerModeChanged() {
+        onRingerModeChanged(getRingerMode());
+    }
+
+    private void onRingerModeChanged(int ringerMode) {
+        Resources r = mContext.getResources();
+        switch (ringerMode) {
+            case RINGER_MODE_SILENT:
+                updateRingerModeTile(R.drawable.ic_qs_ringer_silent,
+                        r.getString(R.string.quick_settings_ringer_mode_silent_label));
+                break;
+            case RINGER_MODE_VIBRATE:
+                updateRingerModeTile(R.drawable.ic_qs_ringer_vibrate,
+                        r.getString(R.string.quick_settings_ringer_mode_vibrate_label));
+                break;
+            case RINGER_MODE_NORMAL:
+                if (vibrateWhenRinging()) {
+                    updateRingerModeTile(R.drawable.ic_qs_ringer_normal_vibrate,
+                            r.getString(R.string.quick_settings_ringer_mode_normal_vibrate_label));
+                } else {
+                    updateRingerModeTile(R.drawable.ic_qs_ringer_normal,
+                            r.getString(R.string.quick_settings_ringer_mode_normal_label));
+                }
+                break;
+        }
+        mRingerModeCallback.refreshView(mRingerModeTile, mRingerModeState);
+    }
+
+    void updateRingerModeTile(int icon, String label) {
+        mRingerModeState.iconId = icon;
+        mRingerModeState.label = label;
+    }
+
+    void refreshRingerModeTile() {
+        onRingerModeChanged();
+    }
+
+    protected int getRingerMode() {
+        return mAudioManager.getRingerMode();
+    }
+
+    private void setRingerMode(int mode) {
+        mAudioManager.setRingerMode(mode);
+    }
+
+    protected boolean vibrateWhenRinging() {
+        return Settings.System.getInt(mContext.getContentResolver(),
+                Settings.System.VIBRATE_WHEN_RINGING, 0) != 0;
+    }
+
+    protected void switchRingerMode() {
+        int ringerMode = getRingerMode();
+        switch (ringerMode) {
+            case RINGER_MODE_SILENT:
+                if (mVibrator.hasVibrator()) {
+                    setRingerMode(RINGER_MODE_VIBRATE);
+                    mVibrator.vibrate(150);
+                } else {
+                    setRingerMode(RINGER_MODE_NORMAL);
+                }
+                break;
+            case RINGER_MODE_VIBRATE:
+                setRingerMode(RINGER_MODE_NORMAL);
+                if(vibrateWhenRinging()) mVibrator.vibrate(150);
+                break;
+            case RINGER_MODE_NORMAL:
+                setRingerMode(RINGER_MODE_SILENT);
+                break;
+        }
     }
 }

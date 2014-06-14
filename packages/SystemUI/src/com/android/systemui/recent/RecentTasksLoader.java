@@ -347,12 +347,18 @@ public class RecentTasksLoader implements View.OnTouchListener {
     boolean mPreloadingFirstTask;
     boolean mCancelPreloadingFirstTask;
     public TaskDescription getFirstTask() {
+        return getFirstTask(false);
+    }
+    public TaskDescription getFirstTask(boolean skip) {
         while(true) {
             synchronized(mFirstTaskLock) {
+                if (skip) {
+                    mFirstTaskLoaded = false;
+                }
                 if (mFirstTaskLoaded) {
                     return mFirstTask;
                 } else if (!mFirstTaskLoaded && !mPreloadingFirstTask) {
-                    mFirstTask = loadFirstTask();
+                    mFirstTask = skip ? findFirstTask() : loadFirstTask();
                     mFirstTaskLoaded = true;
                     return mFirstTask;
                 }
@@ -399,6 +405,45 @@ public class RecentTasksLoader implements View.OnTouchListener {
         return null;
     }
 
+    public TaskDescription findFirstTask() {
+        final ActivityManager am = (ActivityManager) mContext.getSystemService(Context.ACTIVITY_SERVICE);
+
+        final List<ActivityManager.RecentTaskInfo> recentTasks = am.getRecentTasksForUser(
+                MAX_TASKS, ActivityManager.RECENT_IGNORE_UNAVAILABLE, UserHandle.CURRENT.getIdentifier());
+        TaskDescription item = null;
+        int i = -1;
+        for (ActivityManager.RecentTaskInfo recentInfo : recentTasks) {
+            i++;
+            Intent intent = new Intent(recentInfo.baseIntent);
+            if (recentInfo.origActivity != null) {
+                intent.setComponent(recentInfo.origActivity);
+            }
+
+            // Don't load the current home activity
+            if (isCurrentHomeActivity(intent.getComponent(), null)) {
+                continue;
+            }
+
+            // Don't load ourselves
+            if (intent.getComponent().getPackageName().equals(mContext.getPackageName())) {
+                continue;
+            }
+
+            item = createTaskDescription(recentInfo.id,
+                    recentInfo.persistentId, recentInfo.baseIntent,
+                    recentInfo.origActivity, recentInfo.description);
+            if (item != null) {
+                loadThumbnailAndIcon(item);
+            }
+            // don't load the first activity
+            if (i == 0) {
+                continue;
+            }
+            return item;
+        }
+        return null;
+    }
+
     public void loadTasksInBackground() {
         loadTasksInBackground(false);
     }
@@ -439,12 +484,15 @@ public class RecentTasksLoader implements View.OnTouchListener {
                 mContext.getSystemService(Context.ACTIVITY_SERVICE);
 
                 final List<ActivityManager.RecentTaskInfo> recentTasks =
-                        am.getRecentTasks(MAX_TASKS, ActivityManager.RECENT_IGNORE_UNAVAILABLE);
+                        am.getRecentTasks(MAX_TASKS, ActivityManager.RECENT_IGNORE_UNAVAILABLE
+                                | ActivityManager.RECENT_WITH_EXCLUDED
+                                | ActivityManager.RECENT_DO_NOT_COUNT_EXCLUDED);
                 int numTasks = recentTasks.size();
                 ActivityInfo homeInfo = new Intent(Intent.ACTION_MAIN)
                         .addCategory(Intent.CATEGORY_HOME).resolveActivityInfo(pm, 0);
 
                 boolean firstScreenful = true;
+                boolean loadOneExcluded = true;
                 ArrayList<TaskDescription> tasks = new ArrayList<TaskDescription>();
 
                 // skip the first task - assume it's either the home screen or the current activity.
@@ -462,6 +510,7 @@ public class RecentTasksLoader implements View.OnTouchListener {
 
                     // Don't load the current home activity.
                     if (isCurrentHomeActivity(intent.getComponent(), homeInfo)) {
+                        loadOneExcluded = false;
                         continue;
                     }
 
@@ -469,6 +518,13 @@ public class RecentTasksLoader implements View.OnTouchListener {
                     if (intent.getComponent().getPackageName().equals(mContext.getPackageName())) {
                         continue;
                     }
+
+                    if (!loadOneExcluded && (recentInfo.baseIntent.getFlags()
+                            & Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS) != 0) {
+                        continue;
+                    }
+
+                    loadOneExcluded = false;
 
                     TaskDescription item = createTaskDescription(recentInfo.id,
                             recentInfo.persistentId, recentInfo.baseIntent,

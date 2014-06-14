@@ -15,6 +15,9 @@
 
 package com.android.server;
 
+import android.content.pm.ThemeUtils;
+import android.provider.Settings.SettingNotFoundException;
+
 import com.android.internal.content.PackageMonitor;
 import com.android.internal.inputmethod.InputMethodUtils;
 import com.android.internal.inputmethod.InputMethodUtils.InputMethodSettings;
@@ -159,6 +162,7 @@ public class InputMethodManagerService extends IInputMethodManager.Stub
 
 
     final Context mContext;
+    private Context mUiContext;
     final Resources mRes;
     final Handler mHandler;
     final InputMethodSettings mSettings;
@@ -196,7 +200,7 @@ public class InputMethodManagerService extends IInputMethodManager.Stub
     private StatusBarManagerService mStatusBar;
     private Notification mImeSwitcherNotification;
     private PendingIntent mImeSwitchPendingIntent;
-    private boolean mShowOngoingImeSwitcherForPhones;
+    private boolean mShowOngoingImeSwitcher;
     private boolean mNotificationShown;
     private final boolean mImeSelectedOnBoot;
 
@@ -401,6 +405,13 @@ public class InputMethodManagerService extends IInputMethodManager.Stub
                     Settings.Secure.ENABLED_INPUT_METHODS), false, this);
             resolver.registerContentObserver(Settings.Secure.getUriFor(
                     Settings.Secure.SELECTED_INPUT_METHOD_SUBTYPE), false, this);
+            resolver.registerContentObserver(Settings.System.getUriFor(
+                    Settings.System.STATUS_BAR_IME_SWITCHER),
+                    false, new ContentObserver(mHandler) {
+                        public void onChange(boolean selfChange) {
+                            updateFromSettingsLocked(true);
+                        }
+                    });
         }
 
         @Override public void onChange(boolean selfChange) {
@@ -637,7 +648,7 @@ public class InputMethodManagerService extends IInputMethodManager.Stub
         Intent intent = new Intent(Settings.ACTION_SHOW_INPUT_METHOD_PICKER);
         mImeSwitchPendingIntent = PendingIntent.getBroadcast(mContext, 0, intent, 0);
 
-        mShowOngoingImeSwitcherForPhones = false;
+        mShowOngoingImeSwitcher = false;
 
         final IntentFilter broadcastFilter = new IntentFilter();
         broadcastFilter.addAction(Intent.ACTION_SCREEN_ON);
@@ -836,12 +847,17 @@ public class InputMethodManagerService extends IInputMethodManager.Stub
                         (KeyguardManager) mContext.getSystemService(Context.KEYGUARD_SERVICE);
                 mNotificationManager = (NotificationManager)
                         mContext.getSystemService(Context.NOTIFICATION_SERVICE);
+                ThemeUtils.registerThemeChangeReceiver(mContext, new BroadcastReceiver() {
+                    @Override
+                    public void onReceive(Context context, Intent intent) {
+                        mUiContext = null;
+                    }
+                });
+
                 mStatusBar = statusBar;
                 statusBar.setIconVisibility("ime", false);
                 updateImeWindowStatusLocked();
-                mShowOngoingImeSwitcherForPhones = mRes.getBoolean(
-                        com.android.internal.R.bool.show_ongoing_ime_switcher);
-                if (mShowOngoingImeSwitcherForPhones) {
+                if (mShowOngoingImeSwitcher) {
                     mWindowManagerService.setOnHardKeyboardStatusChangeListener(
                             mHardKeyboardListener);
                 }
@@ -1446,7 +1462,7 @@ public class InputMethodManagerService extends IInputMethodManager.Stub
     }
 
     private boolean needsToShowImeSwitchOngoingNotification() {
-        if (!mShowOngoingImeSwitcherForPhones) return false;
+        if (!mShowOngoingImeSwitcher) return false;
         if (isScreenLocked()) return false;
         synchronized (mMethodMap) {
             List<InputMethodInfo> imis = mSettings.getEnabledInputMethodListLocked();
@@ -1653,6 +1669,8 @@ public class InputMethodManagerService extends IInputMethodManager.Stub
             mCurMethodId = null;
             unbindCurrentMethodLocked(true, false);
         }
+        mShowOngoingImeSwitcher = Settings.System.getInt(mContext.getContentResolver(),
+               Settings.System.STATUS_BAR_IME_SWITCHER, 1) == 1;
     }
 
     /* package */ void setInputMethodLocked(String id, int subtypeId) {
@@ -2575,6 +2593,13 @@ public class InputMethodManagerService extends IInputMethodManager.Stub
         }
     }
 
+    private Context getUiContext() {
+        if (mUiContext == null) {
+            mUiContext = ThemeUtils.createUiContext(mContext);
+        }
+        return mUiContext != null ? mUiContext : mContext;
+    }
+
     // ----------------------------------------------------------------------
 
     private void showInputMethodMenu() {
@@ -2611,7 +2636,7 @@ public class InputMethodManagerService extends IInputMethodManager.Stub
     private void showInputMethodMenuInternal(boolean showSubtypes) {
         if (DEBUG) Slog.v(TAG, "Show switching menu");
 
-        final Context context = mContext;
+        final Context context = getUiContext();
         final boolean isScreenLocked = isScreenLocked();
 
         final String lastInputMethodId = mSettings.getSelectedInputMethod();

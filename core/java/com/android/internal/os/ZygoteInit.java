@@ -71,7 +71,7 @@ public class ZygoteInit {
     private static final int LOG_BOOT_PROGRESS_PRELOAD_END = 3030;
 
     /** when preloading, GC after allocating this many bytes */
-    private static final int PRELOAD_GC_THRESHOLD = 50000;
+    private static final int PRELOAD_GC_THRESHOLD = 1000000;
 
     public static final String USAGE_STRING =
             " <\"start-system-server\"|\"\" for startSystemServer>";
@@ -88,7 +88,7 @@ public class ZygoteInit {
      * The number of times that the main Zygote loop
      * should run before calling gc() again.
      */
-    static final int GC_LOOP_COUNT = 10;
+    static final int GC_LOOP_COUNT = 15;
 
     /**
      * The name of a resource file that contains classes to preload.
@@ -96,7 +96,7 @@ public class ZygoteInit {
     private static final String PRELOADED_CLASSES = "preloaded-classes";
 
     /** Controls whether we should preload resources during zygote init. */
-    private static final boolean PRELOAD_RESOURCES = true;
+    private static final boolean PRELOAD_RESOURCES = false;
 
     /**
      * Invokes a static "main(argv[]) method on class "className".

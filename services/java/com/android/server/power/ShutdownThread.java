@@ -1,5 +1,6 @@
 /*
  * Copyright (C) 2008 The Android Open Source Project
+ * This code has been modified. Portions copyright (C) 2013, ParanoidAndroid Project.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,6 +17,8 @@
 
  
 package com.android.server.power;
+
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import android.app.ActivityManagerNative;
 import android.app.AlertDialog;
@@ -47,6 +50,7 @@ import com.android.internal.telephony.ITelephony;
 
 import android.util.Log;
 import android.view.WindowManager;
+import android.view.KeyEvent;
 
 public final class ShutdownThread extends Thread {
     // constants
@@ -79,6 +83,8 @@ public final class ShutdownThread extends Thread {
     
     private final Object mActionDoneSync = new Object();
     private boolean mActionDone;
+    private AtomicBoolean mModemDone = new AtomicBoolean(false);
+    private AtomicBoolean mMountServiceDone = new AtomicBoolean(false);
     private Context mContext;
     private PowerManager mPowerManager;
     private PowerManager.WakeLock mCpuWakeLock;
@@ -126,25 +132,55 @@ public final class ShutdownThread extends Thread {
 
         if (confirm) {
             final CloseDialogReceiver closer = new CloseDialogReceiver(context);
-            if (sConfirmDialog != null) {
-                sConfirmDialog.dismiss();
+            final AlertDialog dialog;
+            if (mReboot && !mRebootSafeMode){
+                dialog = new AlertDialog.Builder(context)
+                        .setTitle(com.android.internal.R.string.global_action_reboot)
+                        .setMessage(com.android.internal.R.string.reboot_confirm)
+                        .setPositiveButton(com.android.internal.R.string.yes,
+                                  new DialogInterface.OnClickListener() {
+                            public void onClick(DialogInterface dialog, int which) {
+                                mReboot = true;
+                                beginShutdownSequence(context);
+                            }
+                        })
+                        .setNegativeButton(com.android.internal.R.string.no,
+                                  new DialogInterface.OnClickListener() {
+                            public void onClick(DialogInterface dialog, int which) {
+                                mReboot = false;
+                                dialog.cancel();
+                            }
+                        })
+                        .create();
+                        dialog.setOnKeyListener(new DialogInterface.OnKeyListener() {
+                            public boolean onKey (DialogInterface dialog, int keyCode, KeyEvent event) {
+                                if (keyCode == KeyEvent.KEYCODE_BACK) {
+                                    mReboot = false;
+                                    dialog.cancel();
+                                }
+                                return true;
+                            }
+                        });
+            } else {
+                dialog = new AlertDialog.Builder(context)
+                        .setTitle(mRebootSafeMode
+                                ? com.android.internal.R.string.reboot_safemode_title
+                                : com.android.internal.R.string.power_off)
+                        .setMessage(resourceId)
+                        .setPositiveButton(com.android.internal.R.string.yes,
+                                  new DialogInterface.OnClickListener() {
+                            public void onClick(DialogInterface dialog, int which) {
+                                beginShutdownSequence(context);
+                            }
+                        })
+                        .setNegativeButton(com.android.internal.R.string.no, null)
+                        .create();
             }
-            sConfirmDialog = new AlertDialog.Builder(context)
-                    .setTitle(mRebootSafeMode
-                            ? com.android.internal.R.string.reboot_safemode_title
-                            : com.android.internal.R.string.power_off)
-                    .setMessage(resourceId)
-                    .setPositiveButton(com.android.internal.R.string.yes, new DialogInterface.OnClickListener() {
-                        public void onClick(DialogInterface dialog, int which) {
-                            beginShutdownSequence(context);
-                        }
-                    })
-                    .setNegativeButton(com.android.internal.R.string.no, null)
-                    .create();
-            closer.dialog = sConfirmDialog;
-            sConfirmDialog.setOnDismissListener(closer);
-            sConfirmDialog.getWindow().setType(WindowManager.LayoutParams.TYPE_KEYGUARD_DIALOG);
-            sConfirmDialog.show();
+
+            closer.dialog = dialog;
+            dialog.setOnDismissListener(closer);
+            dialog.getWindow().setType(WindowManager.LayoutParams.TYPE_KEYGUARD_DIALOG);
+            dialog.show();
         } else {
             beginShutdownSequence(context);
         }
@@ -213,8 +249,10 @@ public final class ShutdownThread extends Thread {
         // throw up an indeterminate system dialog to indicate radio is
         // shutting down.
         ProgressDialog pd = new ProgressDialog(context);
-        pd.setTitle(context.getText(com.android.internal.R.string.power_off));
-        pd.setMessage(context.getText(com.android.internal.R.string.shutdown_progress));
+        pd.setTitle(mReboot ? context.getText(com.android.internal.R.string.global_action_reboot) :
+                context.getText(com.android.internal.R.string.power_off));
+        pd.setMessage(mReboot ? context.getText(com.android.internal.R.string.reboot_progress) :
+                context.getText(com.android.internal.R.string.shutdown_progress));
         pd.setIndeterminate(true);
         pd.setCancelable(false);
         pd.getWindow().setType(WindowManager.LayoutParams.TYPE_KEYGUARD_DIALOG);
@@ -258,7 +296,7 @@ public final class ShutdownThread extends Thread {
 
     void actionDone() {
         synchronized (mActionDoneSync) {
-            mActionDone = true;
+            mActionDone = mMountServiceDone.get() && mModemDone.get();
             mActionDoneSync.notifyAll();
         }
     }
@@ -268,13 +306,6 @@ public final class ShutdownThread extends Thread {
      * Shuts off power regardless of radio and bluetooth state if the alloted time has passed.
      */
     public void run() {
-        BroadcastReceiver br = new BroadcastReceiver() {
-            @Override public void onReceive(Context context, Intent intent) {
-                // We don't allow apps to cancel this, so ignore the result.
-                actionDone();
-            }
-        };
-
         /*
          * Write a system property in case the system_server reboots before we
          * get to the actual hardware restart. If that happens, we'll retry at
@@ -292,31 +323,14 @@ public final class ShutdownThread extends Thread {
         if (mRebootSafeMode) {
             SystemProperties.set(REBOOT_SAFEMODE_PROPERTY, "1");
         }
-
+        // Shutdown radios.
+        shutdownRadios(MAX_RADIO_WAIT_TIME);
         Log.i(TAG, "Sending shutdown broadcast...");
         
         // First send the high-level shut down broadcast.
-        mActionDone = false;
         Intent intent = new Intent(Intent.ACTION_SHUTDOWN);
         intent.addFlags(Intent.FLAG_RECEIVER_FOREGROUND);
-        mContext.sendOrderedBroadcastAsUser(intent,
-                UserHandle.ALL, null, br, mHandler, 0, null, null);
-        
-        final long endTime = SystemClock.elapsedRealtime() + MAX_BROADCAST_TIME;
-        synchronized (mActionDoneSync) {
-            while (!mActionDone) {
-                long delay = endTime - SystemClock.elapsedRealtime();
-                if (delay <= 0) {
-                    Log.w(TAG, "Shutdown broadcast timed out");
-                    break;
-                }
-                try {
-                    mActionDoneSync.wait(delay);
-                } catch (InterruptedException e) {
-                }
-            }
-        }
-        
+        mContext.sendBroadcastAsUser(intent, UserHandle.ALL);
         Log.i(TAG, "Shutting down activity manager...");
         
         final IActivityManager am =
@@ -328,13 +342,11 @@ public final class ShutdownThread extends Thread {
             }
         }
 
-        // Shutdown radios.
-        shutdownRadios(MAX_RADIO_WAIT_TIME);
-
         // Shutdown MountService to ensure media is in a safe state
         IMountShutdownObserver observer = new IMountShutdownObserver.Stub() {
             public void onShutDownComplete(int statusCode) throws RemoteException {
                 Log.w(TAG, "Result code " + statusCode + " from MountService.shutdown");
+                mMountServiceDone.set(true);
                 actionDone();
             }
         };
@@ -342,7 +354,6 @@ public final class ShutdownThread extends Thread {
         Log.i(TAG, "Shutting down MountService");
 
         // Set initial variables and time out time.
-        mActionDone = false;
         final long endShutTime = SystemClock.elapsedRealtime() + MAX_SHUTDOWN_WAIT_TIME;
         synchronized (mActionDoneSync) {
             try {
@@ -457,7 +468,7 @@ public final class ShutdownThread extends Thread {
                             Log.e(TAG, "RemoteException during NFC shutdown", ex);
                             nfcOff = true;
                         }
-                        if (radioOff) {
+                        if (nfcOff) {
                             Log.i(TAG, "NFC turned off.");
                         }
                     }
@@ -469,17 +480,14 @@ public final class ShutdownThread extends Thread {
                     }
                     SystemClock.sleep(PHONE_STATE_POLL_SLEEP_MSEC);
                 }
+                if (!done[0]) {
+                    Log.w(TAG, "Timed out waiting for NFC, Radio and Bluetooth shutdown.");
+                }
+                mModemDone.set(true);
+                actionDone();
             }
         };
-
         t.start();
-        try {
-            t.join(timeout);
-        } catch (InterruptedException ex) {
-        }
-        if (!done[0]) {
-            Log.w(TAG, "Timed out waiting for NFC, Radio and Bluetooth shutdown.");
-        }
     }
 
     /**

@@ -50,11 +50,11 @@
     <!-- When true, show 1/2G networks as 3G. -->
     <bool name="config_showMin3G">false</bool>
 
-    <!-- Show rotation lock button in phone-style notification panel. -->
-    <bool name="config_showRotationLock">true</bool>
-
     <!-- Amount of time to hold off before showing the search panel when the user presses home -->
     <integer name="config_show_search_delay">200</integer>
+
+    <!-- Amount of time to hold off before switching apps when the user presses recents -->
+    <integer name="config_switch_app_delay">500</integer>
 
     <!-- Vibration duration for MultiWaveView used in SearchPanelView -->
     <integer translatable="false" name="config_vibration_duration">0</integer>
@@ -85,7 +85,7 @@
     <integer name="quick_settings_user_time_settings_tile_span">1</integer>
 
     <!-- Whether rotation lock shows up in quick settings or not -->
-    <bool name="quick_settings_show_rotation_lock">false</bool>
+    <bool name="quick_settings_show_rotation_lock">true</bool>
 
     <!-- Whether or not the RSSI tile is capitalized or not. -->
     <bool name="quick_settings_rssi_tile_capitalization">true</bool>
@@ -105,10 +105,21 @@
     <!-- Should "4G" be shown instead of "LTE" when the network is NETWORK_TYPE_LTE? -->
     <bool name="config_show4GForLTE">true</bool>
 
+    <!-- Enable stick pie to screen edge -->
+    <bool name="config_stickPieToScreenEdge">true</bool>
+
+    <!-- Enable force pie centered -->
+    <bool name="config_forcePieCentered">true</bool>
+
     <!-- milliseconds before the heads up notification auto-dismisses. -->
     <integer name="heads_up_notification_decay">3700</integer>
 
     <!-- milliseconds before the heads up notification accepts touches. -->
     <integer name="heads_up_sensitivity_delay">700</integer>
+
+    <!-- Sensivity of pie gestures controls.
+         Must be minimum 1 and maximum 10 (See @EdgeServiceConstants.java).
+         Default for pie is high sensivity -->
+    <integer name="pie_gesture_sensivity">10</integer>
 </resources>
 

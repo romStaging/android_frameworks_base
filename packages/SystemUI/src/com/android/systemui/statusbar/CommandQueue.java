@@ -1,5 +1,6 @@
 /*
  * Copyright (C) 2010 The Android Open Source Project
+ * This code has been modified. Portions copyright (C) 2013, ParanoidAndroid Project.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -93,10 +94,12 @@ public class CommandQueue extends IStatusBar.Stub {
         public void setImeWindowStatus(IBinder token, int vis, int backDisposition);
         public void setHardKeyboardStatus(boolean available, boolean enabled);
         public void toggleRecentApps();
+        public void clearRecentApps();
         public void preloadRecentApps();
         public void showSearchPanel();
         public void hideSearchPanel();
         public void cancelPreloadRecentApps();
+        public void toggleOrientationListener(boolean enable);
         public void setWindowState(int window, int state);
     }
 
@@ -223,6 +226,10 @@ public class CommandQueue extends IStatusBar.Stub {
             mHandler.removeMessages(MSG_CANCEL_PRELOAD_RECENT_APPS);
             mHandler.obtainMessage(MSG_CANCEL_PRELOAD_RECENT_APPS, 0, 0, null).sendToTarget();
         }
+    }
+
+    public void toggleOrientationListener(boolean enable) {
+        mCallbacks.toggleOrientationListener(enable);
     }
 
     public void setWindowState(int window, int state) {

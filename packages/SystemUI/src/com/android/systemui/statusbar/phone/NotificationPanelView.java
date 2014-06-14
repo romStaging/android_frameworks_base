@@ -20,8 +20,10 @@ import android.content.Context;
 import android.content.res.Resources;
 import android.graphics.Canvas;
 import android.graphics.drawable.Drawable;
+import android.provider.Settings;
 import android.util.AttributeSet;
 import android.util.EventLog;
+import android.util.SettingConfirmationHelper;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.accessibility.AccessibilityEvent;
@@ -33,12 +35,13 @@ import com.android.systemui.statusbar.GestureRecorder;
 public class NotificationPanelView extends PanelView {
     public static final boolean DEBUG_GESTURES = true;
 
-    Drawable mHandleBar;
-    int mHandleBarHeight;
-    View mHandleView;
-    int mFingers;
-    PhoneStatusBar mStatusBar;
-    boolean mOkToFlip;
+    private Drawable mHandleBar;
+    private int mHandleBarHeight;
+    private View mHandleView;
+    private int mFingers;
+    private PhoneStatusBar mStatusBar;
+    private boolean mOkToFlip;
+    private static final float QUICK_PULL_DOWN_PERCENTAGE = 0.8f;
 
     public NotificationPanelView(Context context, AttributeSet attrs) {
         super(context, attrs);
@@ -110,29 +113,52 @@ public class NotificationPanelView extends PanelView {
             }
         }
         if (PhoneStatusBar.SETTINGS_DRAG_SHORTCUT && mStatusBar.mHasFlipSettings) {
+            boolean flip = false;
             switch (event.getActionMasked()) {
                 case MotionEvent.ACTION_DOWN:
                     mOkToFlip = getExpandedHeight() == 0;
-                    break;
-                case MotionEvent.ACTION_POINTER_DOWN:
-                    if (mOkToFlip) {
-                        float miny = event.getY(0);
-                        float maxy = miny;
-                        for (int i=1; i<event.getPointerCount(); i++) {
-                            final float y = event.getY(i);
-                            if (y < miny) miny = y;
-                            if (y > maxy) maxy = y;
-                        }
-                        if (maxy - miny < mHandleBarHeight) {
-                            if (getMeasuredHeight() < mHandleBarHeight) {
-                                mStatusBar.switchToSettings();
-                            } else {
-                                mStatusBar.flipToSettings();
+                    if(Settings.System.getInt(mContext.getContentResolver(),
+                                Settings.System.QUICK_SETTINGS_QUICK_PULL_DOWN, 0) != 2) {
+                            if (event.getX(0) > mStatusBar.getStatusBarView().getWidth() * QUICK_PULL_DOWN_PERCENTAGE) {
+                                flip = true;
                             }
-                            mOkToFlip = false;
-                        }
                     }
                     break;
+                case MotionEvent.ACTION_POINTER_DOWN:
+                    flip = true;
+                    break;
+            }
+            if (mOkToFlip && flip) {
+                float miny = event.getY(0);
+                float maxy = miny;
+                for (int i=1; i<event.getPointerCount(); i++) {
+                    final float y = event.getY(i);
+                    if (y < miny) miny = y;
+                    if (y > maxy) maxy = y;
+                }
+                if (maxy - miny < mHandleBarHeight) {
+                    if(getExpandedHeight() < mHandleBarHeight) {
+                        SettingConfirmationHelper.showConfirmationDialogForSetting(
+                                mContext,
+                                mContext.getString(R.string.quick_settings_quick_pull_down_title),
+                                mContext.getString(R.string.quick_settings_quick_pull_down_message),
+                                mContext.getResources().getDrawable(R.drawable.quick_pull_down),
+                                Settings.System.QUICK_SETTINGS_QUICK_PULL_DOWN,
+                                new SettingConfirmationHelper.OnSelectListener() {
+                                    @Override
+                                    public void onSelect(boolean enabled) {
+                                        if (!enabled){
+                                            mStatusBar.flipToNotifications();
+                                        }
+                                    }
+                                });
+
+                         mStatusBar.switchToSettings();
+                    } else {
+                        mStatusBar.flipToSettings();
+                    }
+                    mOkToFlip = false;
+                }
             }
         }
         return mHandleView.dispatchTouchEvent(event);

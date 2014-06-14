@@ -1,5 +1,6 @@
 /*
  * Copyright (C) 2012 The Android Open Source Project
+ * This code has been modified. Portions copyright (C) 2013, ParanoidAndroid Project.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -141,6 +142,11 @@ public class KeyguardSimPukView extends KeyguardAbsKeyInputView
     @Override
     protected int getPasswordTextViewId() {
         return R.id.pinEntry;
+    }
+
+    @Override
+    protected boolean getQuickUnlockAllowed() {
+        return false;
     }
 
     @Override
@@ -296,8 +302,6 @@ public class KeyguardSimPukView extends KeyguardAbsKeyInputView
     }
 
     private void updateSim() {
-        getSimUnlockProgressDialog().show();
-
         if (mCheckSimPukThread == null) {
             mCheckSimPukThread = new CheckSimPuk(mPukText, mPinText) {
                 void onSimLockChangedResponse(final int result, final int attemptsRemaining) {
@@ -333,6 +337,8 @@ public class KeyguardSimPukView extends KeyguardAbsKeyInputView
                     });
                 }
             };
+
+            getSimUnlockProgressDialog().show();
             mCheckSimPukThread.start();
         }
     }

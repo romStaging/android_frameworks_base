@@ -1782,7 +1782,15 @@ public class WifiStateMachine extends StateMachine {
         if (countryCode != null && !countryCode.isEmpty()) {
             setCountryCode(countryCode, false);
         } else {
-            //use driver default
+            // On wifi-only devices, some drivers don't find hidden SSIDs unless DRIVER COUNTRY
+            // is called. Pinging the wifi driver without country code resolves this issue.
+            ConnectivityManager cm =
+                    (ConnectivityManager)mContext.getSystemService(Context.CONNECTIVITY_SERVICE);
+            if (!cm.isNetworkSupported(ConnectivityManager.TYPE_MOBILE)) {
+                setCountryCode(null, false);
+            }
+
+            // In other case, mmc tables from carrier do the trick of starting up the wifi driver
         }
     }
 
@@ -1934,6 +1942,7 @@ public class WifiStateMachine extends StateMachine {
 
         scanResults = scanResultsBuf.toString();
         if (TextUtils.isEmpty(scanResults)) {
+           mScanResults.clear();
            return;
         }
 
@@ -3903,9 +3912,12 @@ public class WifiStateMachine extends StateMachine {
         }
         @Override
         public void exit() {
-            /* Request a CS wakelock during transition to mobile */
-            checkAndSetConnectivityInstance();
-            mCm.requestNetworkTransitionWakelock(getName());
+            if (Settings.Global.getInt(mContext.getContentResolver(),
+                    Settings.Global.AIRPLANE_MODE_ON, 0) != 1) {
+                /* Request a CS wakelock during transition to mobile */
+                checkAndSetConnectivityInstance();
+                mCm.requestNetworkTransitionWakelock(getName());
+            }
         }
     }
 
